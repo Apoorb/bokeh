@@ -186,11 +186,6 @@ slider.on_change('value', update_plot)
 layout = column(p,widgetbox(slider))
 curdoc().add_root(layout)
 
-show(layout)
-#Display plot
-output_file("Test.html")
-
-save(layout)
 
 
 
