@@ -1,210 +1,89 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Wed Feb  5 11:17:38 2020
-
-@author: abibeka
-"""
-
-import os
-import glob
-import pandas as pd
-import re
-import geopandas as gpd
-import json
 from os.path import join, dirname
+import datetime
 
+import pandas as pd
+from scipy.signal import savgol_filter
 
-from bokeh.io import output_notebook, show,curdoc
-from bokeh.plotting import figure, output_file, save
-from bokeh.models import GeoJSONDataSource, LinearColorMapper, ColorBar, Slider, HoverTool
-from bokeh.palettes import brewer
-from bokeh.layouts import widgetbox, row, column
+from bokeh.io import curdoc
+from bokeh.layouts import row, column
+from bokeh.models import ColumnDataSource, DataRange1d, Select
+from bokeh.palettes import Blues4
+from bokeh.plotting import figure
 
+STATISTICS = ['record_min_temp', 'actual_min_temp', 'average_min_temp', 'average_max_temp', 'actual_max_temp', 'record_max_temp']
 
+def get_dataset(src, name, distribution):
+    df = src[src.airport == name].copy()
+    del df['airport']
+    df['date'] = pd.to_datetime(df.date)
+    # timedelta here instead of pd.DateOffset to avoid pandas bug < 0.18 (Pandas issue #11925)
+    df['left'] = df.date - datetime.timedelta(days=0.5)
+    df['right'] = df.date + datetime.timedelta(days=0.5)
+    df = df.set_index(['date'])
+    df.sort_index(inplace=True)
+    if distribution == 'Smoothed':
+        window, order = 51, 3
+        for key in STATISTICS:
+            df[key] = savgol_filter(df[key], window, order)
 
-#*****************************************************************************************************************************
-# Read the Data
-#*****************************************************************************************************************************
+    return ColumnDataSource(data=df)
 
+def make_plot(source, title):
+    plot = figure(x_axis_type="datetime", plot_width=800, tools="", toolbar_location=None)
+    plot.title.text = title
 
-#Wb_Name = 'Fatality_Statistics_Processed'
-x1 = pd.ExcelFile(join(dirname(__file__), 'data/Fatality_Statistics_Processed.xlsx'))
-x1.sheet_names
-df = x1.parse('Alcohol-Related')
+    plot.quad(top='record_max_temp', bottom='record_min_temp', left='left', right='right',
+              color=Blues4[2], source=source, legend="Record")
+    plot.quad(top='average_max_temp', bottom='average_min_temp', left='left', right='right',
+              color=Blues4[1], source=source, legend="Average")
+    plot.quad(top='actual_max_temp', bottom='actual_min_temp', left='left', right='right',
+              color=Blues4[0], alpha=0.5, line_color="black", source=source, legend="Actual")
 
-# Read District data
+    # fixed attributes
+    plot.xaxis.axis_label = None
+    plot.yaxis.axis_label = "Temperature (F)"
+    plot.axis.axis_label_text_font_style = "bold"
+    plot.x_range = DataRange1d(range_padding=0.0)
+    plot.grid.grid_line_alpha = 0.3
 
+    return plot
 
-# Read the County and District Shape Files
-Countyshapefile = join(dirname(__file__),'data/PennDOT-CountyDistrictShp/County_Boundary.shp')
-#Read shapefile using Geopandas
-gdf = gpd.read_file(Countyshapefile)[['COUNTY_NAM', 'DISTRICT_N','PLANNING_P', 'geometry']]
-gdf.head()
-gdf.plot()
-gdf.loc[:,'COUNTY_NAM'] = gdf.COUNTY_NAM.str.capitalize()
-gdf.loc[:,'COUNTY_NAM'] = gdf.COUNTY_NAM.str.capitalize()
-gdf.loc[:,'COUNTY_NAM']= gdf.loc[:,'COUNTY_NAM'].str.capitalize().str.strip().str.replace('Mckean','McKean')
-gdf.rename(columns = {'COUNTY_NAM': 'CountyNm'},inplace=True)
-df.columns
-df_2016  = df[['CountyNm',2016, 'District','TotalLinearMiles','TotalDVMT']]
+def update_plot(attrname, old, new):
+    city = city_select.value
+    plot.title.text = "Weather data for " + cities[city]['title']
 
-# #*****************************************************************************************************************************
-# # Merge Crash data with Shapefile
-# #*****************************************************************************************************************************
-# # Merge Shape file with County data
-# merged = gdf.merge(df_2016, left_on = 'CountyNm', right_on = 'CountyNm')
-# #Read data to json.
-# check = merged.to_json()
-# merged_json = json.loads(merged.to_json())
-# #Convert to String like object.
-# json_data = json.dumps(merged_json)
+    src = get_dataset(df, cities[city]['airport'], distribution_select.value)
+    source.data.update(src.data)
 
+city = 'Austin'
+distribution = 'Discrete'
 
+cities = {
+    'Austin': {
+        'airport': 'AUS',
+        'title': 'Austin, TX',
+    },
+    'Boston': {
+        'airport': 'BOS',
+        'title': 'Boston, MA',
+    },
+    'Seattle': {
+        'airport': 'SEA',
+        'title': 'Seattle, WA',
+    }
+}
 
+city_select = Select(value=city, title='City', options=sorted(cities.keys()))
+distribution_select = Select(value=distribution, title='Distribution', options=['Discrete', 'Smoothed'])
 
-# #Input GeoJSON source that contains features for plotting.
-# geosource = GeoJSONDataSource(geojson = json_data)
+df = pd.read_csv(join(dirname(__file__), 'data/2015_weather.csv'))
+source = get_dataset(df, cities[city]['airport'], distribution)
+plot = make_plot(source, "Weather data for " + cities[city]['title'])
 
+city_select.on_change('value', update_plot)
+distribution_select.on_change('value', update_plot)
 
-# #Define a sequential multi-hue color palette.
-# palette = brewer['YlGnBu'][8]
-# #Reverse color order so that dark blue is highest obesity.
-# palette = palette[::-1]
-# #Instantiate LinearColorMapper that linearly maps numbers in a range, into a sequence of colors.
-# color_mapper = LinearColorMapper(palette = palette, low = 0, high = 40)
+controls = column(city_select, distribution_select)
 
-# #Define custom tick labels for color bar.
-# # tick_labels = {'0': '0%', '5': '5%', '10':'10%', '15':'15%', '20':'20%', '25':'25%', '30':'30%','35':'35%', '40': '>40%'}
-
-# #Create color bar. 
-# color_bar = ColorBar(color_mapper=color_mapper, label_standoff= 8,width = 600, height = 30,
-# border_line_color=None,location = (0,0), orientation = 'horizontal') #, major_label_overrides = tick_labels
-
-
-# #Create figure object.
-# p = figure(title = 'Alcohol-Related Fatalities, 2016', plot_height = 700 , plot_width = 1000, 
-#            toolbar_location = None,outline_line_width=0,outline_line_alpha=0)
-# p.xgrid.grid_line_color = None
-# p.ygrid.grid_line_color = None
-
-# #Add patch renderer to figure. 
-# p.patches('xs','ys', source = geosource,fill_color = {'field' : '2016', 'transform' : color_mapper},
-#           line_color = 'black', line_width = 1, fill_alpha = 1)
-
-# p.title.text_font_size = '40pt'
-# #Specify figure layout.
-# p.add_layout(color_bar, 'below')
-
-# # p.xaxis.axis_label_text_font_size = "60pt"
-# # p.xaxis.axis_line_width=0
-# # p.yaxis.axis_line_width=0
-# # p.yaxis.axis_label_text_font_size = "60pt"
-# # p.legend.label_text_font_size = "60pt"
-
-
-
-# show(p)
-
-# output_file("Test.html")
-# save(p)
-
-# #Display figure.
-# p.save("test.html")
-
-
-# df_2016  = df[['CountyNm',2016, 'District','TotalLinearMiles','TotalDVMT']]
-# #Define function that returns json_data for year selected by user.
-    
-
-YearCols = df.columns.tolist()
-YearCols.remove('CountyNm')
-YearCols.remove('CrashCategory')
-YearCols.remove('District')
-YearCols.remove('TotalLinearMiles')
-YearCols.remove('TotalDVMT')
-NewYearCols = []
-for i in YearCols:
-    df.rename(columns = {i:"Yr-{}".format(i)},inplace=True)
-    NewYearCols.append("Yr-{}".format(i))
-
-df1 = pd.wide_to_long(df,'Yr', i='CountyNm',
-                j='year',sep = '-')
-df1.rename(columns= {'Yr':"Fatalities"},inplace=True)
-df1.reset_index(inplace=True)
-def json_data(selectedYear):
-    yr = selectedYear
-    df_yr = df1[df1['year'] == yr]
-    merged = gdf.merge(df_yr, left_on = 'CountyNm', right_on = 'CountyNm', how = 'left')
-    merged.fillna('No data', inplace = True)
-    merged_json = json.loads(merged.to_json())
-    json_data = json.dumps(merged_json)
-    return json_data
-#Input GeoJSON source that contains features for plotting.
-geosource = GeoJSONDataSource(geojson = json_data(2015))
-#Define a sequential multi-hue color palette.
-palette = brewer['YlGnBu'][8]
-#Reverse color order so that dark blue is highest obesity.
-palette = palette[::-1]
-#Instantiate LinearColorMapper that linearly maps numbers in a range, into a sequence of colors. Input nan_color.
-color_mapper = LinearColorMapper(palette = palette, low = 0, high = 40, nan_color = '#d9d9d9')
-#Define custom tick labels for color bar.
-tick_labels = {'0': '0%', '5': '5%', '10':'10%', '15':'15%', '20':'20%', '25':'25%', '30':'30%','35':'35%', '40': '>40%'}
-#Add hover tool
-hover = HoverTool(tooltips = [ ('Country/region','@CountyNm'),('Fatalities', '@Fatalities')])
-
-
-#Create color bar. 
-color_bar = ColorBar(color_mapper=color_mapper, label_standoff= 8,width = 600, height = 30,
-border_line_color=None,location = (0,0), orientation = 'horizontal') #, major_label_overrides = tick_labels
-
-
-#Create color bar. 
-color_bar = ColorBar(color_mapper=color_mapper, label_standoff=8,width = 500, height = 30,
-                     border_line_color=None,location = (0,0), orientation = 'horizontal') #, major_label_overrides = tick_labels)
-#Create figure object.
-#Create figure object.
-p = figure(title = 'Alcohol-Related Fatalities, 2016', plot_height = 700 , plot_width = 1000, 
-           toolbar_location = None,outline_line_width=0,outline_line_alpha=0, tools = [hover])
-p.xgrid.grid_line_color = None
-p.ygrid.grid_line_color = None
-#Add patch renderer to figure. 
-p.patches('xs','ys', source = geosource,fill_color = {'field' :'Fatalities', 'transform' : color_mapper},
-          line_color = 'black', line_width = 0.25, fill_alpha = 1)
-#Specify layout
-p.add_layout(color_bar, 'below')
-# Define the callback function: update_plot
-def update_plot(attr, old, new):
-    yr = slider.value
-    new_data = json_data(yr)
-    geosource.geojson = new_data
-    p.title.text = 'Alcohol-Related Fatalities, %d' %yr
-    
-# Make a slider object: slider 
-slider = Slider(title = 'Year',start = 1999, end = 2016, step = 1, value = 2016)
-slider.on_change('value', update_plot)
-# Make a column layout of widgetbox(slider) and plot, and add it to the current document
-layout = column(p,widgetbox(slider))
-curdoc().add_root(layout)
-
-show(layout)
-#Display plot
-output_file("Test.html")
-
-save(layout)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+curdoc().add_root(row(plot, controls))
+curdoc().title = "Weather"
